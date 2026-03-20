@@ -71,6 +71,8 @@ from typing import Callable, Optional
 
 import serial
 
+from tsip_parser import IMUState, NAV960TSIPClient
+
 # ---------------------------------------------------------------------------
 # WGS-84 ellipsoid constants
 # ---------------------------------------------------------------------------
@@ -595,17 +597,30 @@ class NAV960Parser:
         baudrate: int = 38400,
         timeout: float = 1.0,
         on_update: Optional[Callable[["NAVState"], None]] = None,
+        protocol: str = 'nmea',
+        lever_arm_x: float = 0.0,
+        lever_arm_y: float = 0.0,
+        lever_arm_z: float = 0.0,
+        on_imu_update: Optional[Callable[[IMUState], None]] = None,
     ):
-        self.port      = port
-        self.baudrate  = baudrate
-        self.timeout   = timeout
-        self.on_update = on_update
+        self.port         = port
+        self.baudrate     = baudrate
+        self.timeout      = timeout
+        self.on_update    = on_update
+        self.protocol     = protocol.lower()
+        self.lever_arm_x  = lever_arm_x
+        self.lever_arm_y  = lever_arm_y
+        self.lever_arm_z  = lever_arm_z
+        self.on_imu_update = on_imu_update
 
         self._state        = NAVState()
         self._lock         = threading.Lock()
         self._thread       = None
         self._running      = False
         self._ref_set      = False   # True once a reference origin is locked in
+
+        # TSIP-mode client (created in start() when protocol='tsip')
+        self._tsip_client: Optional[NAV960TSIPClient] = None
 
     # ------------------------------------------------------------------
     # Reference origin for ENU
@@ -643,17 +658,97 @@ class NAV960Parser:
         with self._lock:
             return copy.copy(self._state)
 
+    @property
+    def imu_state(self) -> Optional[IMUState]:
+        """Return a thread-safe snapshot of the latest IMU state.
+
+        Returns None when running in 'nmea' mode or before the first
+        TSIP packet has been received.
+        """
+        if self._tsip_client is not None:
+            return self._tsip_client.imu_state
+        return None
+
+    def _on_tsip_imu(self, imu: IMUState):
+        """Mirror key IMU fields into NAVState so NMEA callers keep working.
+
+        When the parser runs in TSIP mode the NAVState is populated from
+        the 8F A9 17 02 packet instead of NMEA sentences.  Fields that
+        exist in both (position, velocity) are kept in sync so code that
+        reads parser.state works regardless of the active protocol.
+        """
+        with self._lock:
+            s = self._state
+            # Roll-corrected position
+            s.latitude  = imu.latitude
+            s.longitude = imu.longitude
+            s.altitude  = imu.height     # ellipsoid height (not MSL, close enough)
+            # ENU velocity components
+            s.vNorth = imu.n_vel
+            s.vEast  = imu.e_vel
+            s.vDown  = -(imu.u_vel) if imu.u_vel is not None else 0.0
+            s.last_update = imu.last_update
+            # ECEF position and velocity
+            if None not in (imu.latitude, imu.longitude, imu.height):
+                s.x, s.y, s.z = lla_to_ecef(imu.latitude, imu.longitude, imu.height)
+                if not self._ref_set:
+                    s.ref_latitude  = imu.latitude
+                    s.ref_longitude = imu.longitude
+                    s.ref_altitude  = imu.height
+                    self._ref_ecef  = (s.x, s.y, s.z)
+                    self._ref_set   = True
+                    print(
+                        f"[TSIP] ENU origin set: "
+                        f"lat={imu.latitude:.8f}  "
+                        f"lon={imu.longitude:.8f}  "
+                        f"alt={imu.height:.3f} m"
+                    )
+                self._refresh_enu(s)
+            if None not in (s.latitude, s.longitude, s.vNorth, s.vEast):
+                s.x_dot, s.y_dot, s.z_dot = ned_to_ecef_velocity(
+                    s.latitude, s.longitude, s.vNorth, s.vEast, s.vDown
+                )
+
+        # Fire the NAVState callback so pre-existing consumers keep working
+        if self.on_update:
+            self.on_update(self.state)
+
+        # Fire the IMU-specific callback
+        if self.on_imu_update:
+            self.on_imu_update(imu)
+
     def start(self):
-        """Open the serial port and begin reading in the background."""
-        self._running = True
-        self._thread  = threading.Thread(target=self._read_loop, daemon=True)
-        self._thread.start()
+        """Open the serial port and begin reading in the background.
+
+        In 'nmea' mode (default) this starts the existing NMEA read loop.
+        In 'tsip' mode this creates a NAV960TSIPClient, waits for the
+        TSIP connection handshake, sends lever-arm config and enables the
+        IMU detail stream.  The py_tsip library manages its own thread.
+        """
+        if self.protocol == 'tsip':
+            self._tsip_client = NAV960TSIPClient(
+                port          = self.port,
+                lever_arm_x   = self.lever_arm_x,
+                lever_arm_y   = self.lever_arm_y,
+                lever_arm_z   = self.lever_arm_z,
+                on_imu_update = self._on_tsip_imu,
+            )
+            self._tsip_client.start()
+        else:
+            self._running = True
+            self._thread  = threading.Thread(target=self._read_loop, daemon=True)
+            self._thread.start()
 
     def stop(self):
-        """Stop the background thread gracefully."""
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=3.0)
+        """Stop the background thread (NMEA) or TSIP client gracefully."""
+        if self.protocol == 'tsip':
+            if self._tsip_client:
+                self._tsip_client.stop()
+                self._tsip_client = None
+        else:
+            self._running = False
+            if self._thread:
+                self._thread.join(timeout=3.0)
 
     # ------------------------------------------------------------------
     # Internal
