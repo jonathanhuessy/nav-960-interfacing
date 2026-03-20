@@ -1,1 +1,2 @@
 pyserial>=3.5
+# py_tsip is bundled locally in ./py_tsip/ (no pip install required)

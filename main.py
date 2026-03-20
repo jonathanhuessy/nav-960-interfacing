@@ -33,6 +33,7 @@ from nav960_parser import (
     parse_gst,
     parse_vtg,
 )
+from tsip_parser import IMUState
 
 
 # ===========================================================================
@@ -105,12 +106,63 @@ def print_state(state: NAVState):
     print("└──────────────────────────────────────────────────────────────┘")
 
 
+def print_imu_state(imu: IMUState):
+    """Pretty-print the IMU/TSIP state to the console."""
+    print("\n\u250c\u2500\u2500\u2500 NAV-960 TSIP Update \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2510")
+
+    print("\u2502  Attitude:")
+    print("\u2502    Yaw        :", _fmt(imu.yaw,        ".3f", " \u00b0"))
+    print("\u2502    Pitch      :", _fmt(imu.pitch,      ".3f", " \u00b0"))
+    print("\u2502    Roll       :", _fmt(imu.roll,       ".3f", " \u00b0"))
+
+    print("\u2502")
+    print("\u2502  Angular rates:")
+    print("\u2502    Yaw rate   :", _fmt(imu.yaw_rate,   ".4f", " \u00b0/s"))
+    print("\u2502    Pitch rate :", _fmt(imu.pitch_rate, ".4f", " \u00b0/s"))
+    print("\u2502    Roll rate  :", _fmt(imu.roll_rate,  ".4f", " \u00b0/s"))
+
+    print("\u2502")
+    print("\u2502  Position (roll-corrected, WGS-84 ellipsoid):")
+    print("\u2502    Latitude   :", _fmt(imu.latitude,   ".8f", " \u00b0"))
+    print("\u2502    Longitude  :", _fmt(imu.longitude,  ".8f", " \u00b0"))
+    print("\u2502    Height     :", _fmt(imu.height,     ".3f",  " m  (ellipsoid)"))
+
+    print("\u2502")
+    print("\u2502  Antenna position (original, WGS-84 ellipsoid):")
+    print("\u2502    Latitude   :", _fmt(imu.lat_original,    ".8f", " \u00b0"))
+    print("\u2502    Longitude  :", _fmt(imu.lon_original,    ".8f", " \u00b0"))
+    print("\u2502    Height     :", _fmt(imu.height_original, ".3f",  " m  (ellipsoid)"))
+
+    print("\u2502")
+    print("\u2502  ENU velocity  [m/s]:")
+    print("\u2502    East  (E)  :", _fmt(imu.e_vel, ".4f", " m/s"))
+    print("\u2502    North (N)  :", _fmt(imu.n_vel, ".4f", " m/s"))
+    print("\u2502    Up    (U)  :", _fmt(imu.u_vel, ".4f", " m/s"))
+
+    print("\u2502")
+    print("\u2502  Solution quality:")
+    print("\u2502    Satellites :", _fmt(imu.num_satellites, "d"))
+    print("\u2502    HDOP       :", _fmt(imu.hdop, ".2f"))
+    print("\u2502    VDOP       :", _fmt(imu.vdop, ".2f"))
+    print("\u2502    \u03c3_E         :", _fmt(imu.e_sigma, ".4f", " m"))
+    print("\u2502    \u03c3_N         :", _fmt(imu.n_sigma, ".4f", " m"))
+    print("\u2502    \u03c3_U         :", _fmt(imu.u_sigma, ".4f", " m"))
+    print("\u2502    Corr. age  :", _fmt(imu.correction_age, ".1f", " s"))
+    print("\u2502    IMU status :", _fmt(imu.imu_status, "d"))
+
+    print("\u2514" + "\u2500" * 62 + "\u2518")
+
+
 # ===========================================================================
-# Callback used in live mode
+# Callbacks used in live mode
 # ===========================================================================
 
 def on_update(state: NAVState):
     print_state(state)
+
+
+def on_imu_update(imu: IMUState):
+    print_imu_state(imu)
 
 
 # ===========================================================================
@@ -134,6 +186,38 @@ def run_demo():
     print("=" * 66)
     print("  NAV-960 Parser — OFFLINE DEMO (no hardware required)")
     print("=" * 66)
+    # --- IMU demo (TSIP 8F A9 17 02 fixture) ---
+    print("\n--- TSIP IMU State (8F A9 17 02) --- hardcoded fixture ---")
+    sample_imu = IMUState(
+        gps_seconds    = 187270.0,
+        position_type  = 4,              # RTK Fixed
+        latitude       = -43.54526308,
+        longitude      = 172.59219800,
+        height         = 21.550,
+        lat_original   = -43.54526200,
+        lon_original   = 172.59220100,
+        height_original= 21.430,
+        e_vel          =  0.012,
+        n_vel          = -0.005,
+        u_vel          =  0.001,
+        yaw            =  92.345,
+        pitch          =  -1.230,
+        roll           =   0.456,
+        yaw_rate       =   0.012,
+        pitch_rate     =  -0.003,
+        roll_rate      =   0.001,
+        num_satellites = 32,
+        hdop           =  0.5,
+        vdop           =  0.8,
+        e_sigma        =  0.006,
+        n_sigma        =  0.006,
+        u_sigma        =  0.010,
+        correction_age =  1.0,
+        imu_status     =  0,
+        station_id     =  122,
+        last_update    =  __import__('time').time(),
+    )
+    print_imu_state(sample_imu)
 
     # --- GGA ---
     print(f"\nSample GGA sentence:\n  {SAMPLE_GGA}")
@@ -229,15 +313,41 @@ def run_demo():
 # Live mode
 # ===========================================================================
 
-def run_live(port: str, baud: int, ref_lat=None, ref_lon=None, ref_alt=None):
-    parser = NAV960Parser(port=port, baudrate=baud, on_update=on_update)
-    if None not in (ref_lat, ref_lon, ref_alt):
-        parser.set_reference(ref_lat, ref_lon, ref_alt)
-        print(f"ENU reference origin fixed at: lat={ref_lat}  lon={ref_lon}  alt={ref_alt} m")
+def run_live(
+    port: str,
+    baud: int,
+    ref_lat=None, ref_lon=None, ref_alt=None,
+    protocol: str = 'nmea',
+    lever_arm_x: float = 0.0,
+    lever_arm_y: float = 0.0,
+    lever_arm_z: float = 0.0,
+):
+    if protocol == 'tsip':
+        parser = NAV960Parser(
+            port          = port,
+            baudrate      = baud,
+            protocol      = 'tsip',
+            lever_arm_x   = lever_arm_x,
+            lever_arm_y   = lever_arm_y,
+            lever_arm_z   = lever_arm_z,
+            on_imu_update = on_imu_update,
+            on_update     = on_update,
+        )
+        print(
+            f"TSIP mode on {port}.  "
+            f"Lever arms: ({lever_arm_x}, {lever_arm_y}, {lever_arm_z}) m.  "
+            f"Press Ctrl+C to stop.\n"
+        )
     else:
-        print("ENU reference origin: will auto-set to first valid fix.")
+        parser = NAV960Parser(port=port, baudrate=baud, on_update=on_update)
+        if None not in (ref_lat, ref_lon, ref_alt):
+            parser.set_reference(ref_lat, ref_lon, ref_alt)
+            print(f"ENU reference origin fixed at: lat={ref_lat}  lon={ref_lon}  alt={ref_alt} m")
+        else:
+            print("ENU reference origin: will auto-set to first valid fix.")
+        print(f"NMEA mode on {port} at {baud} baud.  Press Ctrl+C to stop.\n")
+
     parser.start()
-    print(f"Listening on {port} at {baud} baud.  Press Ctrl+C to stop.\n")
     try:
         while True:
             time.sleep(0.1)
@@ -272,31 +382,42 @@ def list_ports():
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Parse NMEA data from a Trimble NAV-960 over serial.",
+        description="NAV-960 parser — NMEA or TSIP over serial.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  python main.py --list-ports\n"
-            "  python main.py --port COM7 --baud 38400\n"
-            "  python main.py --port COM7 --baud 38400 "
-            "--ref-lat -43.5452608 --ref-lon 172.5922080 --ref-alt 32.791\n"
             "  python main.py --demo\n"
+            "  python main.py --port COM7 --baud 38400 --protocol nmea\n"
+            "  python main.py --port COM7 --protocol tsip\n"
+            "  python main.py --port COM7 --protocol tsip "
+            "--lever-arm-x 0.5 --lever-arm-y 0.0 --lever-arm-z -0.2\n"
+            "  python main.py --port COM7 --protocol nmea "
+            "--ref-lat -43.5452608 --ref-lon 172.5922080 --ref-alt 32.791\n"
         ),
     )
-    ap.add_argument("--port",       default="COM7",
+    ap.add_argument("--port",         default="COM7",
                     help="Serial port, e.g. COM7  (default: COM7)")
-    ap.add_argument("--baud",       type=int, default=38400,
+    ap.add_argument("--baud",         type=int, default=38400,
                     help="Baud rate  (default: 38400)")
-    ap.add_argument("--list-ports", action="store_true",
+    ap.add_argument("--protocol",     default="nmea", choices=["nmea", "tsip"],
+                    help="Protocol to use: nmea (default) or tsip")
+    ap.add_argument("--list-ports",   action="store_true",
                     help="List available serial ports and exit")
-    ap.add_argument("--demo",       action="store_true",
+    ap.add_argument("--demo",         action="store_true",
                     help="Parse built-in sample sentences without hardware")
-    ap.add_argument("--ref-lat",    type=float, default=None,
-                    help="ENU reference latitude  (decimal degrees, optional)")
-    ap.add_argument("--ref-lon",    type=float, default=None,
-                    help="ENU reference longitude (decimal degrees, optional)")
-    ap.add_argument("--ref-alt",    type=float, default=None,
-                    help="ENU reference altitude  (metres MSL, optional)")
+    ap.add_argument("--ref-lat",      type=float, default=None,
+                    help="ENU reference latitude  (decimal degrees, NMEA mode only)")
+    ap.add_argument("--ref-lon",      type=float, default=None,
+                    help="ENU reference longitude (decimal degrees, NMEA mode only)")
+    ap.add_argument("--ref-alt",      type=float, default=None,
+                    help="ENU reference altitude  (metres MSL,     NMEA mode only)")
+    ap.add_argument("--lever-arm-x",  type=float, default=0.0,
+                    help="Antenna lever arm X, metres body frame   (TSIP mode only)")
+    ap.add_argument("--lever-arm-y",  type=float, default=0.0,
+                    help="Antenna lever arm Y, metres body frame   (TSIP mode only)")
+    ap.add_argument("--lever-arm-z",  type=float, default=0.0,
+                    help="Antenna lever arm Z, metres body frame   (TSIP mode only)")
     args = ap.parse_args()
 
     if args.list_ports:
@@ -304,7 +425,14 @@ def main():
     elif args.demo:
         run_demo()
     else:
-        run_live(args.port, args.baud, args.ref_lat, args.ref_lon, args.ref_alt)
+        run_live(
+            args.port, args.baud,
+            args.ref_lat, args.ref_lon, args.ref_alt,
+            protocol     = args.protocol,
+            lever_arm_x  = args.lever_arm_x,
+            lever_arm_y  = args.lever_arm_y,
+            lever_arm_z  = args.lever_arm_z,
+        )
 
 
 if __name__ == "__main__":
